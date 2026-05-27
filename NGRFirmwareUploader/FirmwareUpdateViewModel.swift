@@ -118,7 +118,13 @@ final class FirmwareUpdateViewModel: ObservableObject {
     }
 
     func copyLogs() {
-        UIPasteboard.general.string = logText
+        let text = logText
+        guard !text.isEmpty else {
+            log("No logs to copy")
+            return
+        }
+
+        UIPasteboard.general.setValue(text, forPasteboardType: "public.plain-text")
         log("Copied \(logLines.count) log line(s) to clipboard")
     }
 
