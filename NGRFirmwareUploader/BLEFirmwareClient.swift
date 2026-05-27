@@ -11,6 +11,8 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
     @Published var discoveredDevices: [CBPeripheral] = []
     @Published var connectedName = ""
 
+    var logHandler: ((String) -> Void)?
+
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var fwuWrite: CBCharacteristic?
@@ -24,7 +26,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
     private var writeContinuations: [CBUUID: CheckedContinuation<Void, Error>] = [:]
     private var notifyContinuation: CheckedContinuation<Void, Error>?
     private var smpResponses: [Data] = []
-    private var smpWaiter: CheckedContinuation<Data, Error>?
+    private var smpResponseError: Error?
 
     override init() {
         super.init()
@@ -32,59 +34,109 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
     }
 
     func scan(prefix: String, seconds: TimeInterval = 5) async throws -> [CBPeripheral] {
-        discoveredDevices = []
+        self.log("Bluetooth state before scan: \(self.central.state.description)")
+        guard self.central.state == .poweredOn else {
+            throw BLEError.remoteError("Bluetooth is not powered on: \(self.central.state.description)")
+        }
+        self.discoveredDevices = []
+        self.log("Starting scan for \(seconds)s, prefix='\(prefix)'")
         return try await withCheckedThrowingContinuation { continuation in
-            scanContinuation = continuation
-            central.scanForPeripherals(withServices: nil)
+            self.scanContinuation = continuation
+            self.central.scanForPeripherals(withServices: nil)
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                central.stopScan()
-                let filtered = discoveredDevices.filter { ($0.name ?? "").hasPrefix(prefix) }
-                scanContinuation?.resume(returning: filtered)
-                scanContinuation = nil
+                self.central.stopScan()
+                let filtered = self.discoveredDevices.filter { ($0.name ?? "").hasPrefix(prefix) }
+                self.log("Scan stopped. Discovered \(self.discoveredDevices.count), matching prefix \(filtered.count)")
+                self.scanContinuation?.resume(returning: filtered)
+                self.scanContinuation = nil
             }
         }
     }
 
     func connect(_ peripheral: CBPeripheral) async throws {
         self.peripheral = peripheral
+        self.fwuWrite = nil
+        self.capability = nil
+        self.smp = nil
         peripheral.delegate = self
+        self.log("Connecting to \(peripheral.debugName)")
         try await withCheckedThrowingContinuation { continuation in
-            connectContinuation = continuation
-            central.connect(peripheral)
+            self.connectContinuation = continuation
+            self.central.connect(peripheral)
         }
-        connectedName = peripheral.name ?? peripheral.identifier.uuidString
-        try await discoverRequiredCharacteristics()
+        self.connectedName = peripheral.name ?? peripheral.identifier.uuidString
+        self.log("Connected. Discovering services and characteristics")
+        try await self.discoverRequiredCharacteristics()
+        self.logRequiredCharacteristics()
     }
 
     func enterFirmwareUpdateMode() async throws {
+        log("Sending FWU mode JSON")
         try await writeJSON(["fwuMode": true])
+        log("FWU mode write complete")
     }
 
-    func readCapabilityState() async throws -> (main: String, radio: String) {
+    func triggerPairing(log externalLog: @escaping (String) -> Void) async throws {
+        externalLog("iOS has no direct pair() API; pairing is triggered by protected GATT operations")
+        externalLog("Pairing trigger 1/2: reading capability characteristic")
+        _ = try await readCapabilityState(log: externalLog)
+        externalLog("Pairing trigger 2/2: enabling SMP notifications")
+        try await subscribeToSMP()
+        if let peripheral, let smp {
+            externalLog("Disabling SMP notifications after pairing trigger")
+            peripheral.setNotifyValue(false, for: smp)
+        }
+    }
+
+    func readCapabilityState(log externalLog: ((String) -> Void)? = nil) async throws -> (main: String, radio: String) {
         guard let capability else { throw BLEError.missingCharacteristic("capability") }
         let data = try await read(capability)
+        externalLog?("Capability raw: \(data.utf8DebugString)")
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let main = ((object?["main"] as? [String: Any])?["state"] as? String) ?? ""
         let radio = ((object?["radio"] as? [String: Any])?["state"] as? String) ?? ""
+        externalLog?("Capability state: main=\(main), radio=\(radio)")
+        return (main, radio)
+    }
+
+    func readSlots(log externalLog: @escaping (String) -> Void) async throws -> (main: Int, radio: Int) {
+        guard let capability else { throw BLEError.missingCharacteristic("capability") }
+        let data = try await read(capability)
+        externalLog("Capability raw: \(data.utf8DebugString)")
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw BLEError.remoteError("Capability JSON is not an object")
+        }
+        guard let main = Self.intValue(object["mainFreeSlot"]), let radio = Self.intValue(object["radioFreeSlot"]) else {
+            throw BLEError.remoteError("Capability JSON missing mainFreeSlot/radioFreeSlot")
+        }
+        externalLog("Capability slots: mainFreeSlot=\(main), radioFreeSlot=\(radio)")
         return (main, radio)
     }
 
     func waitForState(_ state: String, initialDelay: TimeInterval = 0, log: @escaping (String) -> Void) async throws {
         if initialDelay > 0 {
+            log("Waiting \(Int(initialDelay))s before first capability read")
             try await Task.sleep(nanoseconds: UInt64(initialDelay * 1_000_000_000))
         }
         log("Waiting for \(state)")
         while true {
-            let current = try await readCapabilityState()
-            if current.main == state || current.radio == state {
-                log("State \(state) reached")
-                return
+            do {
+                let current = try await readCapabilityState(log: log)
+                if current.main == state || current.radio == state {
+                    log("State \(state) reached")
+                    return
+                }
+                if current.main == "error" || current.radio == "error" {
+                    throw BLEError.remoteError("FWU state is error: main=\(current.main), radio=\(current.radio)")
+                }
+                log("State not reached yet; main=\(current.main), radio=\(current.radio)")
+            } catch let error as BLEError {
+                throw error
+            } catch {
+                log("Capability read while waiting failed: \(error.detailedDescription)")
             }
-            if current.main == "error" || current.radio == "error" {
-                throw BLEError.remoteError("FWU state is error")
-            }
-            try await Task.sleep(nanoseconds: 1_000_000_000)
+            try await Task.sleep(nanoseconds: 5_000_000_000)
         }
     }
 
@@ -103,10 +155,14 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
         var totalSent = 0
         var sequence: UInt8 = 0
         let writeType: CBCharacteristicWriteType = withoutResponse ? .withoutResponse : .withResponse
+        let start = Date()
+        var nextProgressStep = 100_000
 
         try await subscribeToSMP()
         defer {
+            log("Unsubscribing from SMP notifications")
             peripheral?.setNotifyValue(false, for: smp)
+            self.smpResponseError = nil
         }
 
         log("Uploading \(url.lastPathComponent), \(image.count) bytes")
@@ -128,19 +184,30 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
                     totalSize: image.count
                 )
                 pending.append(.init(sequence: sequence, offset: windowOffset, chunkSize: chunkSize, packet: packet))
+                log("SMP request prepared: seq=\(sequence), slot=\(slot), off=\(windowOffset), chunk=\(chunkSize), packet=\(packet.count) bytes")
                 windowOffset += chunkSize
                 sequence = sequence &+ 1
             }
 
             totalSent = try await sendWindowWithRetry(pending, characteristic: smp, writeType: writeType, retries: retryCount, log: log)
             progress(totalSent, image.count)
+            log("Sent up to offset \(totalSent); \(max(image.count - totalSent, 0)) bytes remaining")
+            if totalSent >= nextProgressStep || totalSent >= image.count {
+                let elapsed = Date().timeIntervalSince(start)
+                log("Progress \(totalSent)/\(image.count) bytes in \(elapsed.formattedSeconds)")
+                while nextProgressStep <= totalSent {
+                    nextProgressStep += 100_000
+                }
+            }
         }
+        log("Upload complete for \(url.lastPathComponent): \(totalSent) bytes in \(Date().timeIntervalSince(start).formattedSeconds)")
     }
 
     private func discoverRequiredCharacteristics() async throws {
         guard let peripheral else { throw BLEError.notConnected }
         try await withCheckedThrowingContinuation { continuation in
-            discoverContinuation = continuation
+            self.discoverContinuation = continuation
+            self.log("Discovering all services")
             peripheral.discoverServices(nil)
         }
     }
@@ -148,21 +215,25 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
     private func writeJSON(_ object: [String: Any]) async throws {
         guard let fwuWrite else { throw BLEError.missingCharacteristic("fwu write") }
         let data = try JSONSerialization.data(withJSONObject: object)
+        log("Writing JSON to \(fwuWrite.uuid): \(data.utf8DebugString), \(data.count) bytes")
         try await write(data, to: fwuWrite, type: .withResponse)
     }
 
     private func read(_ characteristic: CBCharacteristic) async throws -> Data {
         guard let peripheral else { throw BLEError.notConnected }
+        log("Reading \(characteristic.uuid) properties=\(characteristic.properties.debugDescription)")
         return try await withCheckedThrowingContinuation { continuation in
-            readContinuation = continuation
+            self.readContinuation = continuation
             peripheral.readValue(for: characteristic)
         }
     }
 
     private func write(_ data: Data, to characteristic: CBCharacteristic, type: CBCharacteristicWriteType) async throws {
         guard let peripheral else { throw BLEError.notConnected }
+        log("Writing \(data.count) bytes to \(characteristic.uuid), type=\(type.debugDescription), props=\(characteristic.properties.debugDescription)")
         if type == .withoutResponse {
             while !peripheral.canSendWriteWithoutResponse {
+                log("Waiting for canSendWriteWithoutResponse")
                 try await Task.sleep(nanoseconds: 10_000_000)
             }
             peripheral.writeValue(data, for: characteristic, type: type)
@@ -170,37 +241,40 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
         }
 
         try await withCheckedThrowingContinuation { continuation in
-            writeContinuations[characteristic.uuid] = continuation
+            self.writeContinuations[characteristic.uuid] = continuation
             peripheral.writeValue(data, for: characteristic, type: type)
         }
     }
 
     private func subscribeToSMP() async throws {
         guard let peripheral, let smp else { throw BLEError.missingCharacteristic("smp") }
+        log("Subscribing to SMP notifications on \(smp.uuid), props=\(smp.properties.debugDescription)")
         try await withCheckedThrowingContinuation { continuation in
-            notifyContinuation = continuation
+            self.notifyContinuation = continuation
             peripheral.setNotifyValue(true, for: smp)
         }
+        log("SMP notifications enabled")
     }
 
     private func nextSMPResponse(timeout: TimeInterval = 30) async throws -> Data {
-        if !smpResponses.isEmpty {
-            return smpResponses.removeFirst()
+        if !self.smpResponses.isEmpty {
+            self.log("Using queued SMP response; queued count before pop=\(self.smpResponses.count)")
+            return self.smpResponses.removeFirst()
         }
-        return try await withThrowingTaskGroup(of: Data.self) { group in
-            group.addTask { @MainActor in
-                try await withCheckedThrowingContinuation { continuation in
-                    self.smpWaiter = continuation
-                }
+        self.log("Waiting for SMP response, timeout=\(Int(timeout))s")
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let error = self.smpResponseError {
+                self.smpResponseError = nil
+                throw error
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                throw BLEError.timeout("SMP response timeout")
+            if !self.smpResponses.isEmpty {
+                self.log("Received queued SMP response")
+                return self.smpResponses.removeFirst()
             }
-            let response = try await group.next()!
-            group.cancelAll()
-            return response
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
+        throw BLEError.timeout("SMP response timeout")
     }
 
     private func sendWindowWithRetry(
@@ -211,16 +285,24 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
         log: @escaping (String) -> Void
     ) async throws -> Int {
         for attempt in 0...retries {
-            smpResponses.removeAll()
+            let staleCount = self.smpResponses.count
+            self.smpResponses.removeAll()
+            if staleCount > 0 {
+                log("Discarded \(staleCount) stale SMP response(s)")
+            }
             do {
+                log("Sending SMP window attempt \(attempt + 1)/\(retries + 1), requests=\(pending.count)")
                 for request in pending {
+                    log("SMP write: seq=\(request.sequence), off=\(request.offset), chunk=\(request.chunkSize), packet=\(request.packet.count) bytes")
                     try await write(request.packet, to: characteristic, type: writeType)
                 }
 
                 var responses: [UInt8: Int] = [:]
                 while responses.count < pending.count {
                     let response = try await nextSMPResponse()
+                    log("SMP response raw: \(response.hexString)")
                     let parsed = try SMP.responseSequenceAndOffset(response)
+                    log("SMP response parsed: seq=\(parsed.sequence), nextOff=\(parsed.offset)")
                     responses[parsed.sequence] = parsed.offset
                 }
 
@@ -237,39 +319,79 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
                 return nextOffset
             } catch {
                 if attempt == retries { throw error }
-                log("SMP window retry \(attempt + 1)/\(retries): \(error.localizedDescription)")
+                log("SMP window retry \(attempt + 1)/\(retries): \(error.detailedDescription)")
             }
         }
         throw BLEError.remoteError("unreachable retry state")
+    }
+
+    private func log(_ line: String) {
+        logHandler?(line)
+    }
+
+    private func logRequiredCharacteristics() {
+        if let fwuWrite {
+            log("FWU write characteristic found: \(fwuWrite.uuid), props=\(fwuWrite.properties.debugDescription)")
+        }
+        if let capability {
+            log("Capability characteristic found: \(capability.uuid), props=\(capability.properties.debugDescription)")
+        }
+        if let smp {
+            log("SMP characteristic found: \(smp.uuid), props=\(smp.properties.debugDescription)")
+        }
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let int = value as? Int {
+            return int
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return nil
     }
 }
 
 extension BLEFirmwareClient: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
         Task { @MainActor in
-            isBluetoothReady = central.state == .poweredOn
+            self.isBluetoothReady = central.state == .poweredOn
+            self.log("Bluetooth state updated: \(central.state.description)")
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         Task { @MainActor in
-            if !discoveredDevices.contains(where: { $0.identifier == peripheral.identifier }) {
-                discoveredDevices.append(peripheral)
+            if !self.discoveredDevices.contains(where: { $0.identifier == peripheral.identifier }) {
+                self.discoveredDevices.append(peripheral)
+                self.log("Discovered \(peripheral.debugName), RSSI=\(RSSI), advertisement=\(advertisementData.debugDescription)")
             }
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
-            connectContinuation?.resume(returning: ())
-            connectContinuation = nil
+            self.log("CoreBluetooth didConnect \(peripheral.debugName)")
+            self.connectContinuation?.resume(returning: ())
+            self.connectContinuation = nil
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
-            connectContinuation?.resume(throwing: error ?? BLEError.notConnected)
-            connectContinuation = nil
+            self.log("CoreBluetooth didFailToConnect \(peripheral.debugName): \((error ?? BLEError.notConnected).detailedDescription)")
+            self.connectContinuation?.resume(throwing: error ?? BLEError.notConnected)
+            self.connectContinuation = nil
+        }
+    }
+
+    nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        Task { @MainActor in
+            if let error {
+                self.log("Disconnected \(peripheral.debugName): \(error.detailedDescription)")
+            } else {
+                self.log("Disconnected \(peripheral.debugName)")
+            }
         }
     }
 }
@@ -278,10 +400,17 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             Task { @MainActor in
-                discoverContinuation?.resume(throwing: error)
-                discoverContinuation = nil
+                self.log("Service discovery failed: \(error.detailedDescription)")
+                self.discoverContinuation?.resume(throwing: error)
+                self.discoverContinuation = nil
             }
             return
+        }
+        Task { @MainActor in
+            self.log("Discovered \(peripheral.services?.count ?? 0) service(s)")
+            peripheral.services?.forEach { service in
+                self.log("Discovering characteristics for service \(service.uuid)")
+            }
         }
         peripheral.services?.forEach { peripheral.discoverCharacteristics(nil, for: $0) }
     }
@@ -289,27 +418,30 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         Task { @MainActor in
             if let error {
-                discoverContinuation?.resume(throwing: error)
-                discoverContinuation = nil
+                self.log("Characteristic discovery failed for service \(service.uuid): \(error.detailedDescription)")
+                self.discoverContinuation?.resume(throwing: error)
+                self.discoverContinuation = nil
                 return
             }
 
+            self.log("Service \(service.uuid) characteristics: \(service.characteristics?.count ?? 0)")
             service.characteristics?.forEach { characteristic in
+                self.log(" - \(characteristic.uuid), props=\(characteristic.properties.debugDescription)")
                 switch characteristic.uuid {
                 case Self.fwuWriteUUID:
-                    fwuWrite = characteristic
+                    self.fwuWrite = characteristic
                 case Self.capabilityUUID:
-                    capability = characteristic
+                    self.capability = characteristic
                 case Self.smpUUID:
-                    smp = characteristic
+                    self.smp = characteristic
                 default:
                     break
                 }
             }
 
-            if fwuWrite != nil, capability != nil, smp != nil {
-                discoverContinuation?.resume(returning: ())
-                discoverContinuation = nil
+            if self.fwuWrite != nil, self.capability != nil, self.smp != nil {
+                self.discoverContinuation?.resume(returning: ())
+                self.discoverContinuation = nil
             }
         }
     }
@@ -317,34 +449,37 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
             if let error {
-                readContinuation?.resume(throwing: error)
-                readContinuation = nil
-                smpWaiter?.resume(throwing: error)
-                smpWaiter = nil
+                self.log("Update value failed for \(characteristic.uuid): \(error.detailedDescription)")
+                if characteristic.uuid == Self.smpUUID {
+                    self.smpResponseError = error
+                    return
+                }
+                self.readContinuation?.resume(throwing: error)
+                self.readContinuation = nil
                 return
             }
 
             let data = characteristic.value ?? Data()
+            self.log("Value update for \(characteristic.uuid): \(data.count) bytes")
             if characteristic.uuid == Self.smpUUID {
-                if let waiter = smpWaiter {
-                    waiter.resume(returning: data)
-                    smpWaiter = nil
-                } else {
-                    smpResponses.append(data)
-                }
+                self.log("Queueing SMP response")
+                self.smpResponses.append(data)
             } else {
-                readContinuation?.resume(returning: data)
-                readContinuation = nil
+                self.log("Read value for \(characteristic.uuid): \(data.utf8DebugString)")
+                self.readContinuation?.resume(returning: data)
+                self.readContinuation = nil
             }
         }
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         Task { @MainActor in
-            guard let continuation = writeContinuations.removeValue(forKey: characteristic.uuid) else { return }
+            guard let continuation = self.writeContinuations.removeValue(forKey: characteristic.uuid) else { return }
             if let error {
+                self.log("Write failed for \(characteristic.uuid): \(error.detailedDescription)")
                 continuation.resume(throwing: error)
             } else {
+                self.log("Write complete for \(characteristic.uuid)")
                 continuation.resume(returning: ())
             }
         }
@@ -354,11 +489,13 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
         Task { @MainActor in
             guard characteristic.uuid == Self.smpUUID else { return }
             if let error {
-                notifyContinuation?.resume(throwing: error)
+                self.log("Notification state failed for \(characteristic.uuid): \(error.detailedDescription)")
+                self.notifyContinuation?.resume(throwing: error)
             } else {
-                notifyContinuation?.resume(returning: ())
+                self.log("Notification state for \(characteristic.uuid): isNotifying=\(characteristic.isNotifying)")
+                self.notifyContinuation?.resume(returning: ())
             }
-            notifyContinuation = nil
+            self.notifyContinuation = nil
         }
     }
 }
@@ -380,5 +517,94 @@ enum BLEError: Error, LocalizedError {
         case .remoteError(let message):
             return message
         }
+    }
+}
+
+private extension CBManagerState {
+    var description: String {
+        switch self {
+        case .unknown:
+            return "unknown"
+        case .resetting:
+            return "resetting"
+        case .unsupported:
+            return "unsupported"
+        case .unauthorized:
+            return "unauthorized"
+        case .poweredOff:
+            return "poweredOff"
+        case .poweredOn:
+            return "poweredOn"
+        @unknown default:
+            return "unknown(\(rawValue))"
+        }
+    }
+}
+
+private extension CBPeripheral {
+    var debugName: String {
+        "\(name ?? "unnamed") [\(identifier.uuidString)]"
+    }
+}
+
+private extension CBCharacteristicProperties {
+    var debugDescription: String {
+        var values: [String] = []
+        if contains(.broadcast) { values.append("broadcast") }
+        if contains(.read) { values.append("read") }
+        if contains(.writeWithoutResponse) { values.append("writeWithoutResponse") }
+        if contains(.write) { values.append("write") }
+        if contains(.notify) { values.append("notify") }
+        if contains(.indicate) { values.append("indicate") }
+        if contains(.authenticatedSignedWrites) { values.append("authenticatedSignedWrites") }
+        if contains(.extendedProperties) { values.append("extendedProperties") }
+        if contains(.notifyEncryptionRequired) { values.append("notifyEncryptionRequired") }
+        if contains(.indicateEncryptionRequired) { values.append("indicateEncryptionRequired") }
+        return values.isEmpty ? "none" : values.joined(separator: ",")
+    }
+}
+
+private extension CBCharacteristicWriteType {
+    var debugDescription: String {
+        switch self {
+        case .withResponse:
+            return "withResponse"
+        case .withoutResponse:
+            return "withoutResponse"
+        @unknown default:
+            return "unknown"
+        }
+    }
+}
+
+private extension Data {
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
+
+    var utf8DebugString: String {
+        if let string = String(data: self, encoding: .utf8) {
+            return "\(string) [hex=\(hexString)]"
+        }
+        return "hex=\(hexString)"
+    }
+}
+
+private extension Error {
+    var detailedDescription: String {
+        let nsError = self as NSError
+        var parts = ["\(localizedDescription)"]
+        parts.append("domain=\(nsError.domain)")
+        parts.append("code=\(nsError.code)")
+        if !nsError.userInfo.isEmpty {
+            parts.append("userInfo=\(nsError.userInfo)")
+        }
+        return parts.joined(separator: ", ")
+    }
+}
+
+private extension TimeInterval {
+    var formattedSeconds: String {
+        String(format: "%.2fs", self)
     }
 }

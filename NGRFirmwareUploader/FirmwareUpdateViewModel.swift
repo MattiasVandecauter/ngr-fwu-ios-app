@@ -9,9 +9,9 @@ final class FirmwareUpdateViewModel: ObservableObject {
     @Published var mainSlot = 1
     @Published var radioSmpImage = 3
     @Published var windowSize = 10
-    @Published var payloadSize = 448
+    @Published var payloadSize = 384
     @Published var retryCount = 3
-    @Published var writeWithoutResponse = true
+    @Published var writeWithoutResponse = false
     @Published var devices: [CBPeripheral] = []
     @Published var selectedDevice: CBPeripheral?
     @Published var isBusy = false
@@ -20,6 +20,12 @@ final class FirmwareUpdateViewModel: ObservableObject {
     @Published var logLines: [String] = []
 
     let ble = BLEFirmwareClient()
+
+    init() {
+        ble.logHandler = { [weak self] line in
+            self?.log(line)
+        }
+    }
 
     func scan() {
         Task { [self] in
@@ -37,6 +43,8 @@ final class FirmwareUpdateViewModel: ObservableObject {
             await self.runBusy { [self] in
                 self.log("Connecting to \(selectedDevice.name ?? selectedDevice.identifier.uuidString)")
                 try await self.ble.connect(selectedDevice)
+                self.log("Trying iOS pairing trigger")
+                try await self.ble.triggerPairing(log: self.log)
                 self.log("Connected")
             }
         }
@@ -52,9 +60,15 @@ final class FirmwareUpdateViewModel: ObservableObject {
             await self.runBusy { [self] in
                 self.progress = 0
                 self.progressText = "Starting FWU"
+                self.log("Reading capability to determine upload slots")
+                let slots = try await self.ble.readSlots(log: self.log)
+                self.mainSlot = slots.main
+                self.radioSmpImage = slots.radio + 2
+                self.log("Using ST slot \(self.mainSlot), nRF SMP image \(self.radioSmpImage)")
+
                 try await self.ble.enterFirmwareUpdateMode()
 
-                try await self.ble.waitForState("readyForInfo", initialDelay: 0, log: self.log)
+                try await self.ble.waitForState("readyForInfo", initialDelay: 15, log: self.log)
                 try await self.ble.uploadImage(
                     url: mainImageURL,
                     slot: self.mainSlot,
@@ -90,9 +104,10 @@ final class FirmwareUpdateViewModel: ObservableObject {
     }
 
     func log(_ line: String) {
-        logLines.append(line)
-        if logLines.count > 300 {
-            logLines.removeFirst(logLines.count - 300)
+        let timestamp = Self.logTimestampFormatter.string(from: Date())
+        logLines.append("\(timestamp) \(line)")
+        if logLines.count > 1000 {
+            logLines.removeFirst(logLines.count - 1000)
         }
     }
 
@@ -111,4 +126,10 @@ final class FirmwareUpdateViewModel: ObservableObject {
             progressText = "Error"
         }
     }
+
+    private static let logTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
 }
