@@ -22,22 +22,22 @@ final class FirmwareUpdateViewModel: ObservableObject {
     let ble = BLEFirmwareClient()
 
     func scan() {
-        Task {
-            await runBusy {
-                log("Scanning for \(targetPrefix)")
-                devices = try await ble.scan(prefix: targetPrefix)
-                log("Found \(devices.count) matching device(s)")
+        Task { [self] in
+            await self.runBusy { [self] in
+                self.log("Scanning for \(self.targetPrefix)")
+                self.devices = try await self.ble.scan(prefix: self.targetPrefix)
+                self.log("Found \(self.devices.count) matching device(s)")
             }
         }
     }
 
     func connect() {
         guard let selectedDevice else { return }
-        Task {
-            await runBusy {
-                log("Connecting to \(selectedDevice.name ?? selectedDevice.identifier.uuidString)")
-                try await ble.connect(selectedDevice)
-                log("Connected")
+        Task { [self] in
+            await self.runBusy { [self] in
+                self.log("Connecting to \(selectedDevice.name ?? selectedDevice.identifier.uuidString)")
+                try await self.ble.connect(selectedDevice)
+                self.log("Connected")
             }
         }
     }
@@ -48,43 +48,43 @@ final class FirmwareUpdateViewModel: ObservableObject {
             return
         }
 
-        Task {
-            await runBusy {
-                progress = 0
-                progressText = "Starting FWU"
-                try await ble.enterFirmwareUpdateMode()
+        Task { [self] in
+            await self.runBusy { [self] in
+                self.progress = 0
+                self.progressText = "Starting FWU"
+                try await self.ble.enterFirmwareUpdateMode()
 
-                try await ble.waitForState("readyForInfo", initialDelay: 0, log: log)
-                try await ble.uploadImage(
+                try await self.ble.waitForState("readyForInfo", initialDelay: 0, log: self.log)
+                try await self.ble.uploadImage(
                     url: mainImageURL,
-                    slot: mainSlot,
-                    payloadSize: payloadSize,
-                    windowSize: windowSize,
-                    retryCount: retryCount,
-                    withoutResponse: writeWithoutResponse,
+                    slot: self.mainSlot,
+                    payloadSize: self.payloadSize,
+                    windowSize: self.windowSize,
+                    retryCount: self.retryCount,
+                    withoutResponse: self.writeWithoutResponse,
                     progress: { sent, total in
                         self.updateProgress(sent: sent, total: total)
                     },
-                    log: log
+                    log: self.log
                 )
 
-                try await ble.waitForState("readyForInfo", initialDelay: 0, log: log)
-                try await ble.uploadImage(
+                try await self.ble.waitForState("readyForInfo", initialDelay: 0, log: self.log)
+                try await self.ble.uploadImage(
                     url: radioImageURL,
-                    slot: radioSmpImage,
-                    payloadSize: payloadSize,
-                    windowSize: windowSize,
-                    retryCount: retryCount,
-                    withoutResponse: writeWithoutResponse,
+                    slot: self.radioSmpImage,
+                    payloadSize: self.payloadSize,
+                    windowSize: self.windowSize,
+                    retryCount: self.retryCount,
+                    withoutResponse: self.writeWithoutResponse,
                     progress: { sent, total in
                         self.updateProgress(sent: sent, total: total)
                     },
-                    log: log
+                    log: self.log
                 )
 
-                try await ble.waitForState("uploadSuccess", initialDelay: 0, log: log)
-                progressText = "FWU complete"
-                log("FWU complete")
+                try await self.ble.waitForState("uploadSuccess", initialDelay: 0, log: self.log)
+                self.progressText = "FWU complete"
+                self.log("FWU complete")
             }
         }
     }
