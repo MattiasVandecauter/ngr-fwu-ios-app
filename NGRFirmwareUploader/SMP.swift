@@ -152,11 +152,31 @@ final class CBORDecoder {
             let length = try readLength(value)
             return String(decoding: try readData(length), as: UTF8.self)
         case 4:
+            if value == 31 {
+                var values: [Any] = []
+                while !isAtBreak() {
+                    values.append(try decodeValue())
+                }
+                try readBreak()
+                return values
+            }
+
             let length = try readLength(value)
             return try (0..<length).map { _ in try decodeValue() }
         case 5:
-            let length = try readLength(value)
             var map: [String: Any] = [:]
+            if value == 31 {
+                while !isAtBreak() {
+                    guard let key = try decodeValue() as? String else {
+                        throw SMPError.invalidResponse("CBOR map key is not text")
+                    }
+                    map[key] = try decodeValue()
+                }
+                try readBreak()
+                return map
+            }
+
+            let length = try readLength(value)
             for _ in 0..<length {
                 guard let key = try decodeValue() as? String else {
                     throw SMPError.invalidResponse("CBOR map key is not text")
@@ -197,6 +217,17 @@ final class CBORDecoder {
             return result
         }
         throw SMPError.invalidResponse("unsupported CBOR integer width")
+    }
+
+    private func isAtBreak() -> Bool {
+        index < data.count && data[index] == 0xff
+    }
+
+    private func readBreak() throws {
+        guard isAtBreak() else {
+            throw SMPError.invalidResponse("expected CBOR break")
+        }
+        index += 1
     }
 
     private func readData(_ length: Int) throws -> Data {

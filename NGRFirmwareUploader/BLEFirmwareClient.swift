@@ -429,11 +429,23 @@ extension BLEFirmwareClient: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
+            let disconnectError = error ?? BLEError.notConnected
             if let error {
                 self.log("Disconnected \(peripheral.debugName): \(error.detailedDescription)")
             } else {
                 self.log("Disconnected \(peripheral.debugName)")
             }
+            self.connectContinuation?.resume(throwing: disconnectError)
+            self.connectContinuation = nil
+            self.readContinuation?.resume(throwing: disconnectError)
+            self.readContinuation = nil
+            self.notifyContinuation?.resume(throwing: disconnectError)
+            self.notifyContinuation = nil
+            for continuation in self.writeContinuations.values {
+                continuation.resume(throwing: disconnectError)
+            }
+            self.writeContinuations.removeAll()
+            self.smpResponseError = disconnectError
         }
     }
 }
