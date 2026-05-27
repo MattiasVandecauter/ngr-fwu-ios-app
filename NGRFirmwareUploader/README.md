@@ -22,14 +22,13 @@ The app exposes the same practical tuning knobs as the Python uploader:
 
 ## Xcode setup
 
-Create a new iOS App project in Xcode:
+Open `NGRFirmwareUploader.xcodeproj` in Xcode.
 
-- Interface: SwiftUI
-- Language: Swift
-- Minimum iOS: 16 or newer
+Before running on a phone:
 
-Then add all Swift files from this folder to the app target and copy the
-Bluetooth usage strings from `Info.plist` into the generated app `Info.plist`.
+- Select the `NGRFirmwareUploader` target.
+- Set your Apple Development Team under Signing & Capabilities.
+- Keep the run destination set to a real iPhone; BLE firmware upload cannot be
+  tested meaningfully in the simulator.
 
 This was not built here; it needs Xcode and a real iPhone for BLE testing.
-
