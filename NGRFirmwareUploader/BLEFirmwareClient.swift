@@ -321,6 +321,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
                 }
 
                 var responses: [UInt8: Int] = [:]
+                let windowEndOffset = pending.last!.offset + pending.last!.chunkSize
                 while responses.count < pending.count {
                     let response = try await nextSMPResponse()
                     log("SMP response raw: \(response.hexString)")
@@ -331,9 +332,21 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
                         continue
                     }
                     responses[parsed.sequence] = parsed.offset
+
+                    if parsed.offset >= windowEndOffset {
+                        return windowEndOffset
+                    }
+
+                    if let request = pending.first(where: { $0.sequence == parsed.sequence }) {
+                        let expectedOffset = request.offset + request.chunkSize
+                        if parsed.offset >= 0, parsed.offset != expectedOffset {
+                            log("SMP resync: seq=\(request.sequence) expected=\(expectedOffset) got=\(parsed.offset)")
+                            return parsed.offset
+                        }
+                    }
                 }
 
-                var nextOffset = pending.last!.offset + pending.last!.chunkSize
+                var nextOffset = windowEndOffset
                 for request in pending {
                     let responseOffset = responses[request.sequence] ?? (request.offset + request.chunkSize)
                     let expectedOffset = request.offset + request.chunkSize
