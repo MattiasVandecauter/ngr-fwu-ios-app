@@ -22,6 +22,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
     private var scanContinuation: CheckedContinuation<[CBPeripheral], Error>?
     private var connectContinuation: CheckedContinuation<Void, Error>?
     private var discoverContinuation: CheckedContinuation<Void, Error>?
+    private var pendingCharacteristicServices = Set<CBUUID>()
     private var readContinuation: CheckedContinuation<Data, Error>?
     private var writeContinuations: [CBUUID: CheckedContinuation<Void, Error>] = [:]
     private var notifyContinuation: CheckedContinuation<Void, Error>?
@@ -114,13 +115,19 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
         return (main, radio)
     }
 
-    func waitForState(_ state: String, initialDelay: TimeInterval = 0, log: @escaping (String) -> Void) async throws {
+    func waitForState(
+        _ state: String,
+        initialDelay: TimeInterval = 0,
+        timeout: TimeInterval = 300,
+        log: @escaping (String) -> Void
+    ) async throws {
         if initialDelay > 0 {
             log("Waiting \(Int(initialDelay))s before first capability read")
             try await Task.sleep(nanoseconds: UInt64(initialDelay * 1_000_000_000))
         }
-        log("Waiting for \(state)")
-        while true {
+        let deadline = Date().addingTimeInterval(timeout)
+        log("Waiting for \(state), timeout=\(Int(timeout))s")
+        while Date() < deadline {
             do {
                 let current = try await readCapabilityState(log: log)
                 if current.main == state || current.radio == state {
@@ -138,6 +145,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
             }
             try await Task.sleep(nanoseconds: 5_000_000_000)
         }
+        throw BLEError.timeout("Timed out waiting for \(state)")
     }
 
     func uploadImage(
@@ -155,8 +163,19 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
         var totalSent = 0
         var sequence: UInt8 = 0
         let writeType: CBCharacteristicWriteType = withoutResponse ? .withoutResponse : .withResponse
+        let maximumWriteLength = peripheral?.maximumWriteValueLength(for: writeType) ?? 0
+        let maximumPayloadSize = maximumPayloadSize(forMaximumWriteLength: maximumWriteLength)
         let start = Date()
         var nextProgressStep = 100_000
+
+        guard payloadSize >= SMP.minimumPayloadSize else {
+            throw BLEError.remoteError("SMP payload size must be at least \(SMP.minimumPayloadSize)")
+        }
+        guard maximumWriteLength > 0, payloadSize <= maximumPayloadSize else {
+            throw BLEError.remoteError(
+                "SMP payload \(payloadSize) exceeds BLE \(writeType.debugDescription) limit; max payload is \(maximumPayloadSize) for write length \(maximumWriteLength)"
+            )
+        }
 
         try await subscribeToSMP()
         defer {
@@ -167,6 +186,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
 
         log("Uploading \(url.lastPathComponent), \(image.count) bytes")
         log("Window \(windowSize), payload \(payloadSize), retries \(retryCount), write \(withoutResponse ? "without response" : "with response")")
+        log("BLE maximum write length for \(writeType.debugDescription): \(maximumWriteLength), max SMP payload: \(maximumPayloadSize)")
 
         while totalSent < image.count {
             var pending: [SMP.PendingRequest] = []
@@ -207,6 +227,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
         guard let peripheral else { throw BLEError.notConnected }
         try await withCheckedThrowingContinuation { continuation in
             self.discoverContinuation = continuation
+            self.pendingCharacteristicServices.removeAll()
             self.log("Discovering all services")
             peripheral.discoverServices(nil)
         }
@@ -284,6 +305,8 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
         retries: Int,
         log: @escaping (String) -> Void
     ) async throws -> Int {
+        let pendingSequences = Set(pending.map(\.sequence))
+
         for attempt in 0...retries {
             let staleCount = self.smpResponses.count
             self.smpResponses.removeAll()
@@ -303,6 +326,10 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
                     log("SMP response raw: \(response.hexString)")
                     let parsed = try SMP.responseSequenceAndOffset(response)
                     log("SMP response parsed: seq=\(parsed.sequence), nextOff=\(parsed.offset)")
+                    guard pendingSequences.contains(parsed.sequence) else {
+                        log("Discarding stale SMP response: unexpected seq=\(parsed.sequence)")
+                        continue
+                    }
                     responses[parsed.sequence] = parsed.offset
                 }
 
@@ -323,6 +350,21 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
             }
         }
         throw BLEError.remoteError("unreachable retry state")
+    }
+
+    private func maximumPayloadSize(forMaximumWriteLength maximumWriteLength: Int) -> Int {
+        guard maximumWriteLength > 0 else { return 0 }
+        var payloadSize = 0
+        while SMP.imageUploadRequest(
+            sequence: 0,
+            slot: 255,
+            offset: 0,
+            data: Data(count: payloadSize + 1),
+            totalSize: Int(UInt32.max)
+        ).count <= maximumWriteLength {
+            payloadSize += 1
+        }
+        return payloadSize
     }
 
     private func log(_ line: String) {
@@ -407,12 +449,19 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
             return
         }
         Task { @MainActor in
-            self.log("Discovered \(peripheral.services?.count ?? 0) service(s)")
-            peripheral.services?.forEach { service in
+            let services = peripheral.services ?? []
+            self.log("Discovered \(services.count) service(s)")
+            guard !services.isEmpty else {
+                self.discoverContinuation?.resume(throwing: BLEError.missingCharacteristic("services"))
+                self.discoverContinuation = nil
+                return
+            }
+            self.pendingCharacteristicServices = Set(services.map(\.uuid))
+            services.forEach { service in
                 self.log("Discovering characteristics for service \(service.uuid)")
             }
+            services.forEach { peripheral.discoverCharacteristics(nil, for: $0) }
         }
-        peripheral.services?.forEach { peripheral.discoverCharacteristics(nil, for: $0) }
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
@@ -425,6 +474,7 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
             }
 
             self.log("Service \(service.uuid) characteristics: \(service.characteristics?.count ?? 0)")
+            self.pendingCharacteristicServices.remove(service.uuid)
             service.characteristics?.forEach { characteristic in
                 self.log(" - \(characteristic.uuid), props=\(characteristic.properties.debugDescription)")
                 switch characteristic.uuid {
@@ -441,6 +491,14 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
 
             if self.fwuWrite != nil, self.capability != nil, self.smp != nil {
                 self.discoverContinuation?.resume(returning: ())
+                self.discoverContinuation = nil
+            } else if self.pendingCharacteristicServices.isEmpty {
+                let missing = [
+                    self.fwuWrite == nil ? "FWU write" : nil,
+                    self.capability == nil ? "capability" : nil,
+                    self.smp == nil ? "SMP" : nil
+                ].compactMap { $0 }.joined(separator: ", ")
+                self.discoverContinuation?.resume(throwing: BLEError.missingCharacteristic(missing))
                 self.discoverContinuation = nil
             }
         }

@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var viewModel = FirmwareUpdateViewModel()
     @State private var pickingMainImage = false
     @State private var pickingRadioImage = false
+    @State private var sharingLogs = false
 
     var body: some View {
         NavigationStack {
@@ -61,6 +62,22 @@ struct ContentView: View {
                 }
 
                 Section("Log") {
+                    HStack {
+                        Button("Copy logs") {
+                            viewModel.copyLogs()
+                        }
+
+                        Button("Share logs") {
+                            sharingLogs = true
+                        }
+                        .disabled(viewModel.logLines.isEmpty)
+
+                        Button("Clear") {
+                            viewModel.clearLogs()
+                        }
+                        .disabled(viewModel.logLines.isEmpty)
+                    }
+
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(viewModel.logLines.enumerated()), id: \.offset) { _, line in
@@ -85,5 +102,19 @@ struct ContentView: View {
                 viewModel.radioImageURL = url
             }
         }
+        .sheet(isPresented: $sharingLogs) {
+            ShareSheet(items: [viewModel.logText])
+        }
+    }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
     }
 }

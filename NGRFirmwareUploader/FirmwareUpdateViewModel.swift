@@ -1,5 +1,6 @@
 import CoreBluetooth
 import Foundation
+import UIKit
 
 @MainActor
 final class FirmwareUpdateViewModel: ObservableObject {
@@ -20,6 +21,10 @@ final class FirmwareUpdateViewModel: ObservableObject {
     @Published var logLines: [String] = []
 
     let ble = BLEFirmwareClient()
+
+    var logText: String {
+        logLines.joined(separator: "\n")
+    }
 
     init() {
         ble.logHandler = { [weak self] line in
@@ -109,6 +114,16 @@ final class FirmwareUpdateViewModel: ObservableObject {
         if logLines.count > 1000 {
             logLines.removeFirst(logLines.count - 1000)
         }
+        print("\(timestamp) \(line)")
+    }
+
+    func copyLogs() {
+        UIPasteboard.general.string = logText
+        log("Copied \(logLines.count) log line(s) to clipboard")
+    }
+
+    func clearLogs() {
+        logLines.removeAll()
     }
 
     private func updateProgress(sent: Int, total: Int) {
