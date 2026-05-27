@@ -94,12 +94,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $pickingMainImage) {
             DocumentPicker { url in
-                viewModel.mainImageURL = url
+                viewModel.setMainImage(url)
             }
         }
         .sheet(isPresented: $pickingRadioImage) {
             DocumentPicker { url in
-                viewModel.radioImageURL = url
+                viewModel.setRadioImage(url)
             }
         }
         .sheet(isPresented: $sharingLogs) {

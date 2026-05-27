@@ -108,6 +108,24 @@ final class FirmwareUpdateViewModel: ObservableObject {
         }
     }
 
+    func setMainImage(_ url: URL) {
+        do {
+            mainImageURL = try importFirmwareImage(from: url)
+            log("Selected ST image: \(mainImageURL?.lastPathComponent ?? url.lastPathComponent)")
+        } catch {
+            log("Error selecting ST image: \(error.localizedDescription)")
+        }
+    }
+
+    func setRadioImage(_ url: URL) {
+        do {
+            radioImageURL = try importFirmwareImage(from: url)
+            log("Selected nRF image: \(radioImageURL?.lastPathComponent ?? url.lastPathComponent)")
+        } catch {
+            log("Error selecting nRF image: \(error.localizedDescription)")
+        }
+    }
+
     func log(_ line: String) {
         let timestamp = Self.logTimestampFormatter.string(from: Date())
         logLines.append("\(timestamp) \(line)")
@@ -135,6 +153,60 @@ final class FirmwareUpdateViewModel: ObservableObject {
     private func updateProgress(sent: Int, total: Int) {
         progress = total == 0 ? 0 : Double(sent) / Double(total)
         progressText = "\(sent) / \(total) bytes"
+    }
+
+    private func importFirmwareImage(from sourceURL: URL) throws -> URL {
+        let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let directory = try firmwareImageDirectory()
+        let destinationURL = uniqueDestinationURL(
+            in: directory,
+            preferredName: sourceURL.lastPathComponent
+        )
+
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        log("Imported \(sourceURL.lastPathComponent) to \(destinationURL.lastPathComponent)")
+        return destinationURL
+    }
+
+    private func firmwareImageDirectory() throws -> URL {
+        let applicationSupport = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let directory = applicationSupport.appendingPathComponent("FirmwareImages", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func uniqueDestinationURL(in directory: URL, preferredName: String) -> URL {
+        let fileManager = FileManager.default
+        let fallbackName = UUID().uuidString + ".bin"
+        let baseName = preferredName.isEmpty ? fallbackName : preferredName
+        let baseURL = directory.appendingPathComponent(baseName)
+
+        if !fileManager.fileExists(atPath: baseURL.path) {
+            return baseURL
+        }
+
+        let ext = baseURL.pathExtension
+        let stem = baseURL.deletingPathExtension().lastPathComponent
+        var counter = 1
+        while true {
+            let candidateName = ext.isEmpty ? "\(stem)-\(counter)" : "\(stem)-\(counter).\(ext)"
+            let candidateURL = directory.appendingPathComponent(candidateName)
+            if !fileManager.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
+            counter += 1
+        }
     }
 
     private func runBusy(_ operation: @escaping () async throws -> Void) async {
