@@ -19,19 +19,17 @@ struct ContentView: View {
                                  pickingMain: $pickingMainImage,
                                  pickingRadio: $pickingRadioImage)
                     SmpCard(viewModel: viewModel)
-                    if viewModel.isBusy || !viewModel.uploadPhase.isEmpty {
-                        UploadProgressCard(viewModel: viewModel)
-                    }
-                    StartButton(viewModel: viewModel)
                     LogCard(viewModel: viewModel, sharing: $sharingLogs)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
+                .padding(.vertical, 12)
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("NGR FW Updater")
             .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                BottomBar(viewModel: viewModel)
+            }
         }
         .sheet(isPresented: $pickingMainImage) {
             DocumentPicker { url in viewModel.setMainImage(url) }
@@ -88,6 +86,8 @@ struct DeviceCard: View {
                     Label(connected ? "Wijzigen" : "Zoeken",
                           systemImage: "antenna.radiowaves.left.and.right")
                         .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                        .fixedSize()
                 }
                 .buttonStyle(.bordered)
                 .tint(connected ? .secondary : .blue)
@@ -153,6 +153,7 @@ struct FirmwareRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                     if !fileSize.isEmpty {
                         Text(fileSize)
                             .font(.caption2)
@@ -162,6 +163,7 @@ struct FirmwareRow: View {
                     Text("Geen bestand gekozen")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
+                        .italic()
                 }
             }
 
@@ -190,13 +192,21 @@ struct SmpCard: View {
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(spacing: 0) {
                     Divider().padding(.top, 12)
-                    Group {
+                    VStack(spacing: 0) {
                         SmpRow { Stepper("Window: \(viewModel.windowSize)", value: $viewModel.windowSize, in: 1...50) }
-                        SmpRow { Stepper("Payload: \(viewModel.payloadSize) B", value: $viewModel.payloadSize, in: 32...448, step: 16) }
+                        Divider().padding(.leading, 4)
+                        SmpRow { Stepper("Payload: \(viewModel.payloadSize) bytes", value: $viewModel.payloadSize, in: 32...448, step: 16) }
+                        Divider().padding(.leading, 4)
                         SmpRow { Stepper("Retries: \(viewModel.retryCount)", value: $viewModel.retryCount, in: 0...10) }
+                        Divider().padding(.leading, 4)
                         SmpRow { Stepper("ST slot: \(viewModel.mainSlot)", value: $viewModel.mainSlot, in: 0...1) }
+                        Divider().padding(.leading, 4)
                         SmpRow { Stepper("nRF image: \(viewModel.radioSmpImage)", value: $viewModel.radioSmpImage, in: 2...3) }
-                        SmpRow { Toggle("Write without response", isOn: $viewModel.writeWithoutResponse) }
+                        Divider().padding(.leading, 4)
+                        SmpRow {
+                            Toggle("Write without response", isOn: $viewModel.writeWithoutResponse)
+                                .tint(.blue)
+                        }
                     }
                 }
             } label: {
@@ -207,10 +217,10 @@ struct SmpCard: View {
                         Text(summary)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
             }
-            .tint(.primary)
         }
     }
 }
@@ -224,46 +234,68 @@ struct SmpRow<Content: View>: View {
     }
 }
 
-// MARK: - Progress Card
+// MARK: - Bottom Bar
 
-struct UploadProgressCard: View {
+struct BottomBar: View {
+    @ObservedObject var viewModel: FirmwareUpdateViewModel
+
+    var showProgress: Bool { viewModel.isBusy || !viewModel.uploadPhase.isEmpty }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if showProgress {
+                Divider()
+                ProgressSection(viewModel: viewModel)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
+            }
+            Divider()
+            StartButton(viewModel: viewModel)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
+        }
+        .background(.regularMaterial)
+        .animation(.easeInOut(duration: 0.25), value: showProgress)
+    }
+}
+
+struct ProgressSection: View {
     @ObservedObject var viewModel: FirmwareUpdateViewModel
 
     var isComplete: Bool { viewModel.uploadPhase == "Geslaagd" }
     var phaseColor: Color { isComplete ? .green : .blue }
 
     var body: some View {
-        AppCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Image(systemName: isComplete ? "checkmark.circle.fill" : "arrow.up.circle.fill")
-                        .foregroundStyle(phaseColor)
-                    Text(viewModel.uploadPhase.isEmpty ? "Verbinden..." : viewModel.uploadPhase)
-                        .font(.headline)
-                        .foregroundStyle(phaseColor)
-                    Spacer()
-                    if viewModel.uploadPct > 0 {
-                        Text("\(viewModel.uploadPct)%")
-                            .font(.headline.monospacedDigit())
-                            .foregroundStyle(phaseColor)
-                    }
+        VStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Image(systemName: isComplete ? "checkmark.circle.fill" : "arrow.up.circle")
+                    .foregroundStyle(phaseColor)
+                    .font(.subheadline)
+                Text(viewModel.uploadPhase.isEmpty ? "Verbinden..." : viewModel.uploadPhase)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(phaseColor)
+                Spacer()
+                if !viewModel.uploadSpeed.isEmpty {
+                    Text(viewModel.uploadSpeed)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-
-                ProgressView(value: viewModel.progress)
-                    .tint(phaseColor)
-
-                if !viewModel.uploadSpeed.isEmpty || !viewModel.uploadETA.isEmpty {
-                    HStack {
-                        if !viewModel.uploadSpeed.isEmpty {
-                            Label(viewModel.uploadSpeed, systemImage: "speedometer")
-                        }
-                        Spacer()
-                        if !viewModel.uploadETA.isEmpty {
-                            Label("ETA \(viewModel.uploadETA)", systemImage: "clock")
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if viewModel.uploadPct > 0 {
+                    Text("\(viewModel.uploadPct)%")
+                        .font(.subheadline.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(phaseColor)
+                }
+            }
+            ProgressView(value: viewModel.progress)
+                .tint(phaseColor)
+            if !viewModel.uploadETA.isEmpty {
+                HStack {
+                    Spacer()
+                    Text("Geschatte resterende tijd: \(viewModel.uploadETA)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -294,16 +326,21 @@ struct StartButton: View {
         } label: {
             HStack(spacing: 8) {
                 if viewModel.isBusy {
-                    ProgressView().progressViewStyle(.circular).tint(.white)
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(0.8)
                 } else {
                     Image(systemName: viewModel.uploadPhase == "Geslaagd"
                           ? "arrow.clockwise.circle.fill"
                           : "arrow.up.circle.fill")
                 }
-                Text(label).fontWeight(.semibold)
+                Text(label)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
+            .padding(.vertical, 13)
         }
         .buttonStyle(.borderedProminent)
         .disabled(!ready)
@@ -490,6 +527,7 @@ struct CardSectionHeader: View {
         Label(title, systemImage: icon)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.secondary)
+            .lineLimit(1)
     }
 }
 
