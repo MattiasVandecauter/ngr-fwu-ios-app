@@ -9,12 +9,14 @@ final class FirmwareUpdateViewModel: ObservableObject {
     @Published var radioImageURL: URL?
     @Published var mainSlot = 1
     @Published var radioSmpImage = 3
-    @Published var windowSize = 10
-    @Published var payloadSize = 384
+    @Published var windowSize = 50
+    @Published var payloadSize = 448
     @Published var retryCount = 3
-    @Published var writeWithoutResponse = false
+    @Published var writeWithoutResponse = true
     @Published var devices: [CBPeripheral] = []
     @Published var selectedDevice: CBPeripheral?
+    @Published var connectedName = ""
+    @Published var isScanning = false
     @Published var isBusy = false
     @Published var progressText = "Idle"
     @Published var progress = 0.0
@@ -34,20 +36,26 @@ final class FirmwareUpdateViewModel: ObservableObject {
 
     func scan() {
         Task { [self] in
-            await self.runBusy { [self] in
-                self.log("Scanning for \(self.targetPrefix)")
+            self.isScanning = true
+            self.devices = []
+            defer { self.isScanning = false }
+            do {
+                self.log("Scanning for \(self.targetPrefix)*")
                 self.devices = try await self.ble.scan(prefix: self.targetPrefix)
                 self.log("Found \(self.devices.count) matching device(s)")
+            } catch {
+                self.log("Scan error: \(error.localizedDescription)")
             }
         }
     }
 
-    func connect() {
-        guard let selectedDevice else { return }
+    func connectTo(_ device: CBPeripheral) {
+        selectedDevice = device
         Task { [self] in
             await self.runBusy { [self] in
-                self.log("Connecting to \(selectedDevice.name ?? selectedDevice.identifier.uuidString)")
-                try await self.ble.connect(selectedDevice)
+                self.log("Connecting to \(device.name ?? device.identifier.uuidString)")
+                try await self.ble.connect(device)
+                self.connectedName = device.name ?? device.identifier.uuidString
                 self.log("Trying iOS pairing trigger")
                 try await self.ble.triggerPairing(log: self.log)
                 self.log("Connected")

@@ -6,39 +6,38 @@ struct ContentView: View {
     @State private var pickingMainImage = false
     @State private var pickingRadioImage = false
     @State private var sharingLogs = false
+    @State private var showingDevicePicker = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Target") {
-                    TextField("Name prefix", text: $viewModel.targetPrefix)
-                    Button("Scan") {
+                Section("Apparaat") {
+                    if viewModel.connectedName.isEmpty {
+                        Text("Niet verbonden")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label(viewModel.connectedName, systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                    Button {
+                        showingDevicePicker = true
                         viewModel.scan()
+                    } label: {
+                        Label("Zoeken...", systemImage: "antenna.radiowaves.left.and.right")
                     }
-                    Picker("Device", selection: $viewModel.selectedDevice) {
-                        Text("None").tag(nil as CBPeripheral?)
-                        ForEach(viewModel.devices, id: \.identifier) { device in
-                            Text(device.name ?? device.identifier.uuidString).tag(Optional(device))
-                        }
-                    }
-                    Button("Connect") {
-                        viewModel.connect()
-                    }
-                    .disabled(viewModel.selectedDevice == nil)
+                    .disabled(viewModel.isBusy)
                 }
 
-                Section("Images") {
-                    Button("Select ST image") {
-                        pickingMainImage = true
-                    }
-                    Text(viewModel.mainImageURL?.lastPathComponent ?? "No ST image selected")
+                Section("Firmware") {
+                    Button("ST image kiezen") { pickingMainImage = true }
+                    Text(viewModel.mainImageURL?.lastPathComponent ?? "Geen ST image gekozen")
                         .font(.footnote)
+                        .foregroundStyle(.secondary)
 
-                    Button("Select nRF image") {
-                        pickingRadioImage = true
-                    }
-                    Text(viewModel.radioImageURL?.lastPathComponent ?? "No nRF image selected")
+                    Button("nRF image kiezen") { pickingRadioImage = true }
+                    Text(viewModel.radioImageURL?.lastPathComponent ?? "Geen nRF image gekozen")
                         .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("SMP") {
@@ -54,30 +53,22 @@ struct ContentView: View {
                     Button("Start firmware update") {
                         viewModel.startUpload()
                     }
-                    .disabled(viewModel.isBusy || viewModel.mainImageURL == nil || viewModel.radioImageURL == nil)
+                    .disabled(viewModel.isBusy || viewModel.connectedName.isEmpty || viewModel.mainImageURL == nil || viewModel.radioImageURL == nil)
 
                     ProgressView(value: viewModel.progress)
                     Text(viewModel.progressText)
                         .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Log") {
                     HStack {
-                        Button("Copy logs") {
-                            viewModel.copyLogs()
-                        }
-
-                        Button("Share logs") {
-                            sharingLogs = true
-                        }
-                        .disabled(viewModel.logLines.isEmpty)
-
-                        Button("Clear") {
-                            viewModel.clearLogs()
-                        }
-                        .disabled(viewModel.logLines.isEmpty)
+                        Button("Copy") { viewModel.copyLogs() }
+                        Button("Share") { sharingLogs = true }
+                            .disabled(viewModel.logLines.isEmpty)
+                        Button("Clear") { viewModel.clearLogs() }
+                            .disabled(viewModel.logLines.isEmpty)
                     }
-
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(viewModel.logLines.enumerated()), id: \.offset) { _, line in
@@ -93,17 +84,90 @@ struct ContentView: View {
             .navigationTitle("NGR FWU")
         }
         .sheet(isPresented: $pickingMainImage) {
-            DocumentPicker { url in
-                viewModel.setMainImage(url)
-            }
+            DocumentPicker { url in viewModel.setMainImage(url) }
         }
         .sheet(isPresented: $pickingRadioImage) {
-            DocumentPicker { url in
-                viewModel.setRadioImage(url)
-            }
+            DocumentPicker { url in viewModel.setRadioImage(url) }
         }
         .sheet(isPresented: $sharingLogs) {
             ShareSheet(items: [viewModel.logText])
+        }
+        .sheet(isPresented: $showingDevicePicker) {
+            DevicePickerSheet(viewModel: viewModel, isPresented: $showingDevicePicker)
+        }
+    }
+}
+
+struct DevicePickerSheet: View {
+    @ObservedObject var viewModel: FirmwareUpdateViewModel
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if viewModel.isScanning {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Zoeken naar BRC_* apparaten...")
+                            .foregroundStyle(.secondary)
+                    }
+                    .listRowBackground(Color.clear)
+                }
+
+                if !viewModel.devices.isEmpty {
+                    Section("Gevonden apparaten") {
+                        ForEach(viewModel.devices, id: \.identifier) { device in
+                            Button {
+                                isPresented = false
+                                viewModel.connectTo(device)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "antenna.radiowaves.left.and.right")
+                                        .foregroundStyle(.blue)
+                                        .frame(width: 28)
+                                    VStack(alignment: .leading) {
+                                        Text(device.name ?? "Onbekend apparaat")
+                                            .fontWeight(.medium)
+                                        Text(device.identifier.uuidString)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.secondary)
+                                        .font(.caption)
+                                }
+                            }
+                            .foregroundStyle(.primary)
+                        }
+                    }
+                }
+
+                if !viewModel.isScanning && viewModel.devices.isEmpty {
+                    ContentUnavailableView(
+                        "Geen apparaten gevonden",
+                        systemImage: "antenna.radiowaves.left.and.right.slash",
+                        description: Text("Zorg dat het apparaat ingeschakeld is en BLE beschikbaar.")
+                    )
+                    .listRowBackground(Color.clear)
+                }
+            }
+            .navigationTitle("Apparaten")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuleer") { isPresented = false }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if !viewModel.isScanning {
+                        Button {
+                            viewModel.scan()
+                        } label: {
+                            Label("Opnieuw", systemImage: "arrow.clockwise")
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -115,6 +179,5 @@ struct ShareSheet: UIViewControllerRepresentable {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
 
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
-    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

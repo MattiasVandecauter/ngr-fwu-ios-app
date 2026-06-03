@@ -29,6 +29,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
     private var writeWithoutResponseContinuation: CheckedContinuation<Void, Error>?
     private var smpResponses: [Data] = []
     private var smpResponseError: Error?
+    private var smpSignal: CheckedContinuation<Void, Never>?
     private var verboseLogging = false
 
     override init() {
@@ -186,6 +187,8 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
             debugLog("Unsubscribing from SMP notifications")
             peripheral?.setNotifyValue(false, for: smp)
             self.smpResponseError = nil
+            self.smpSignal?.resume()
+            self.smpSignal = nil
         }
 
         log("Uploading \(url.lastPathComponent), \(image.count) bytes")
@@ -299,22 +302,28 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
 
     private func nextSMPResponseOrNil(timeout: TimeInterval) async throws -> Data? {
         if !self.smpResponses.isEmpty {
-            self.debugLog("Using queued SMP response; queued count before pop=\(self.smpResponses.count)")
+            self.debugLog("Using queued SMP response; count=\(self.smpResponses.count)")
             return self.smpResponses.removeFirst()
         }
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if let error = self.smpResponseError {
-                self.smpResponseError = nil
-                throw error
-            }
-            if !self.smpResponses.isEmpty {
-                self.debugLog("Received queued SMP response")
-                return self.smpResponses.removeFirst()
-            }
-            try await Task.sleep(nanoseconds: 10_000_000)
+        if let error = self.smpResponseError {
+            self.smpResponseError = nil
+            throw error
         }
-        return nil
+        // Suspend until signalled by incoming notification or timeout fires.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.smpSignal = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                guard let self, self.smpSignal != nil else { return }
+                self.smpSignal?.resume()
+                self.smpSignal = nil
+            }
+        }
+        if let error = self.smpResponseError {
+            self.smpResponseError = nil
+            throw error
+        }
+        return self.smpResponses.isEmpty ? nil : self.smpResponses.removeFirst()
     }
 
     private func probeMissing(
@@ -544,6 +553,8 @@ extension BLEFirmwareClient: CBCentralManagerDelegate {
             }
             self.writeContinuations.removeAll()
             self.smpResponseError = disconnectError
+            self.smpSignal?.resume()
+            self.smpSignal = nil
         }
     }
 }
@@ -632,6 +643,8 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
             if characteristic.uuid == Self.smpUUID {
                 self.debugLog("Queueing SMP response")
                 self.smpResponses.append(data)
+                self.smpSignal?.resume()
+                self.smpSignal = nil
             } else {
                 self.debugLog("Read value for \(characteristic.uuid): \(data.utf8DebugString)")
                 self.readContinuation?.resume(returning: data)
