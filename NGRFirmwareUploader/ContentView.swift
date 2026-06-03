@@ -23,25 +23,26 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                .padding(.bottom, 80)
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("NGR FW Updater")
             .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                BottomBar(viewModel: viewModel)
+            .sheet(isPresented: $pickingMainImage) {
+                DocumentPicker { url in viewModel.setMainImage(url) }
+            }
+            .sheet(isPresented: $pickingRadioImage) {
+                DocumentPicker { url in viewModel.setRadioImage(url) }
+            }
+            .sheet(isPresented: $sharingLogs) {
+                ShareSheet(items: [viewModel.logText])
+            }
+            .sheet(isPresented: $showingDevicePicker) {
+                DevicePickerSheet(viewModel: viewModel, isPresented: $showingDevicePicker)
             }
         }
-        .sheet(isPresented: $pickingMainImage) {
-            DocumentPicker { url in viewModel.setMainImage(url) }
-        }
-        .sheet(isPresented: $pickingRadioImage) {
-            DocumentPicker { url in viewModel.setRadioImage(url) }
-        }
-        .sheet(isPresented: $sharingLogs) {
-            ShareSheet(items: [viewModel.logText])
-        }
-        .sheet(isPresented: $showingDevicePicker) {
-            DevicePickerSheet(viewModel: viewModel, isPresented: $showingDevicePicker)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            BottomBar(viewModel: viewModel)
         }
     }
 }
@@ -72,12 +73,16 @@ struct DeviceCard: View {
                     Text(connected ? viewModel.connectedName : "Niet verbonden")
                         .font(.headline)
                         .foregroundStyle(connected ? .primary : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     Text(connected ? "BLE verbonden" : "Tik Zoeken om te verbinden")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
+                .layoutPriority(1)
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Button {
                     showingPicker = true
@@ -239,18 +244,18 @@ struct SmpRow<Content: View>: View {
 struct BottomBar: View {
     @ObservedObject var viewModel: FirmwareUpdateViewModel
 
-    var showProgress: Bool { viewModel.isBusy || !viewModel.uploadPhase.isEmpty }
+    var showProgress: Bool { viewModel.isBusy || viewModel.progress > 0 }
 
     var body: some View {
         VStack(spacing: 0) {
+            Divider()
             if showProgress {
-                Divider()
                 ProgressSection(viewModel: viewModel)
                     .padding(.horizontal, 16)
-                    .padding(.top, 12)
+                    .padding(.top, 10)
                     .padding(.bottom, 4)
+                Divider()
             }
-            Divider()
             StartButton(viewModel: viewModel)
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
