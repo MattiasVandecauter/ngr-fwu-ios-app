@@ -18,9 +18,26 @@ final class FirmwareUpdateViewModel: ObservableObject {
     @Published var connectedName = ""
     @Published var isScanning = false
     @Published var isBusy = false
-    @Published var progressText = "Idle"
+    @Published var progressText = ""
     @Published var progress = 0.0
+    @Published var uploadPhase = ""
+    @Published var uploadSpeed = ""
+    @Published var uploadETA = ""
+    @Published var uploadPct = 0
     @Published var logLines: [String] = []
+
+    private var lastProgressLabel = ""
+    private var phaseStartDate = Date()
+    private var phaseStartBytes = 0
+
+    var mainFileSize: String { fileSizeString(mainImageURL) }
+    var radioFileSize: String { fileSizeString(radioImageURL) }
+
+    private func fileSizeString(_ url: URL?) -> String {
+        guard let url,
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return "" }
+        return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+    }
 
     let ble = BLEFirmwareClient()
 
@@ -65,14 +82,19 @@ final class FirmwareUpdateViewModel: ObservableObject {
 
     func startUpload() {
         guard let mainImageURL, let radioImageURL else {
-            log("Select both images first")
+            log("Selecteer eerst beide firmware bestanden")
             return
         }
 
         Task { [self] in
             await self.runBusy { [self] in
                 self.progress = 0
-                self.progressText = "Starting FWU"
+                self.uploadPhase = ""
+                self.uploadSpeed = ""
+                self.uploadETA = ""
+                self.uploadPct = 0
+                self.lastProgressLabel = ""
+
                 self.log("Reading capability to determine upload slots")
                 let slots = try await self.ble.readSlots(log: self.log)
                 self.mainSlot = slots.main
@@ -89,9 +111,7 @@ final class FirmwareUpdateViewModel: ObservableObject {
                     windowSize: self.windowSize,
                     retryCount: self.retryCount,
                     withoutResponse: self.writeWithoutResponse,
-                    progress: { sent, total in
-                        self.updateProgress(sent: sent, total: total)
-                    },
+                    progress: { sent, total in self.updateProgress(label: "main", sent: sent, total: total) },
                     log: self.log
                 )
 
@@ -103,15 +123,15 @@ final class FirmwareUpdateViewModel: ObservableObject {
                     windowSize: self.windowSize,
                     retryCount: self.retryCount,
                     withoutResponse: self.writeWithoutResponse,
-                    progress: { sent, total in
-                        self.updateProgress(sent: sent, total: total)
-                    },
+                    progress: { sent, total in self.updateProgress(label: "radio", sent: sent, total: total) },
                     log: self.log
                 )
 
                 try await self.ble.waitForState("uploadSuccess", initialDelay: 0, log: self.log)
-                self.progressText = "FWU complete"
-                self.log("FWU complete")
+                self.uploadPhase = "Geslaagd"
+                self.progress = 1
+                self.uploadPct = 100
+                self.log("FWU voltooid")
             }
         }
     }
@@ -158,9 +178,36 @@ final class FirmwareUpdateViewModel: ObservableObject {
         logLines.removeAll()
     }
 
-    private func updateProgress(sent: Int, total: Int) {
+    private func updateProgress(label: String, sent: Int, total: Int) {
+        if label != lastProgressLabel {
+            lastProgressLabel = label
+            phaseStartDate = Date()
+            phaseStartBytes = sent
+            uploadPhase = label == "main" ? "Main firmware" : "Radio firmware"
+            uploadSpeed = ""
+            uploadETA = ""
+        }
         progress = total == 0 ? 0 : Double(sent) / Double(total)
+        uploadPct = total == 0 ? 0 : Int(Double(sent) / Double(total) * 100)
         progressText = "\(sent) / \(total) bytes"
+
+        let elapsed = Date().timeIntervalSince(phaseStartDate)
+        let bytesSent = sent - phaseStartBytes
+        if elapsed > 1, bytesSent > 0 {
+            let kbps = Double(bytesSent) / 1024 / elapsed
+            uploadSpeed = String(format: "%.0f KB/s", kbps)
+            let remaining = total - sent
+            if kbps > 0 {
+                let eta = Int(Double(remaining) / (kbps * 1024))
+                uploadETA = formatETA(eta)
+            }
+        }
+    }
+
+    private func formatETA(_ sec: Int) -> String {
+        if sec <= 0 { return "0s" }
+        let m = sec / 60, s = sec % 60
+        return m > 0 ? "\(m)m \(s)s" : "\(s)s"
     }
 
     private func importFirmwareImage(from sourceURL: URL) throws -> URL {
