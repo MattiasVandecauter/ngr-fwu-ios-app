@@ -256,7 +256,7 @@ struct SmpCard: View {
                 VStack(spacing: 0) {
                     Divider().padding(.top, 12)
                     VStack(spacing: 0) {
-                        SmpRow { Stepper("Window: \(viewModel.windowSize)", value: $viewModel.windowSize, in: 1...50) }
+                        SmpRow { Stepper("Window: \(viewModel.windowSize)", value: $viewModel.windowSize, in: 1...1000) }
                         Divider().padding(.leading, 4)
                         SmpRow { Stepper("Payload: \(viewModel.payloadSize) bytes", value: $viewModel.payloadSize, in: 32...448, step: 16) }
                         Divider().padding(.leading, 4)
