@@ -19,8 +19,13 @@ struct ContentView: View {
                                  pickingMain: $pickingMainImage,
                                  pickingRadio: $pickingRadioImage)
                     SmpCard(viewModel: viewModel)
+                    if viewModel.uploadPhase == "Geslaagd" {
+                        UploadSummaryCard(viewModel: viewModel)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     LogCard(viewModel: viewModel, sharing: $sharingLogs)
                 }
+                .animation(.easeInOut(duration: 0.3), value: viewModel.uploadPhase)
                 .padding(.horizontal, 14)
                 .padding(.top, 8)
                 .padding(.bottom, 8)
@@ -94,6 +99,64 @@ struct DeviceCard: View {
                 .disabled(viewModel.isBusy)
             }
         }
+    }
+}
+
+// MARK: - Upload Summary Card
+
+struct UploadSummaryCard: View {
+    @ObservedObject var viewModel: FirmwareUpdateViewModel
+
+    var totalSeconds: Int { Int(viewModel.uploadTotalDuration) }
+    var totalFormatted: String {
+        let m = totalSeconds / 60, s = totalSeconds % 60
+        return m > 0 ? "\(m)m \(s)s" : "\(s)s"
+    }
+
+    var body: some View {
+        AppCard {
+            VStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                    Text("Upload voltooid")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(totalFormatted)
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.green)
+                }
+
+                Divider()
+
+                ForEach(viewModel.uploadStats, id: \.label) { stat in
+                    HStack(spacing: 0) {
+                        Text(stat.label)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Group {
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(stat.bytes), countStyle: .file))
+                                .frame(width: 64, alignment: .trailing)
+                            Text(formatDuration(stat.duration))
+                                .frame(width: 52, alignment: .trailing)
+                            Text(String(format: "%.0f KB/s", stat.avgSpeed))
+                                .frame(width: 68, alignment: .trailing)
+                        }
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func formatDuration(_ t: TimeInterval) -> String {
+        let s = Int(t)
+        let m = s / 60
+        return m > 0 ? "\(m)m \(s % 60)s" : "\(s)s"
     }
 }
 

@@ -26,9 +26,21 @@ final class FirmwareUpdateViewModel: ObservableObject {
     @Published var uploadPct = 0
     @Published var logLines: [String] = []
 
+    struct PhaseStats {
+        let label: String
+        let bytes: Int
+        let duration: TimeInterval
+        var avgSpeed: Double { duration > 0 ? Double(bytes) / 1024 / duration : 0 }
+    }
+
+    @Published var uploadStats: [PhaseStats] = []
+    @Published var uploadTotalDuration: TimeInterval = 0
+
     private var lastProgressLabel = ""
     private var phaseStartDate = Date()
     private var phaseStartBytes = 0
+    private var phaseTotal = 0
+    private var uploadStartDate = Date()
 
     var mainFileSize: String { fileSizeString(mainImageURL) }
     var radioFileSize: String { fileSizeString(radioImageURL) }
@@ -57,7 +69,7 @@ final class FirmwareUpdateViewModel: ObservableObject {
             self.devices = []
             defer { self.isScanning = false }
             do {
-                self.log("Scanning for \(self.targetPrefix)*")
+                self.log("Scanning for NGR's")
                 self.devices = try await self.ble.scan(prefix: self.targetPrefix)
                 self.log("Found \(self.devices.count) matching device(s)")
             } catch {
@@ -94,6 +106,9 @@ final class FirmwareUpdateViewModel: ObservableObject {
                 self.uploadETA = ""
                 self.uploadPct = 0
                 self.lastProgressLabel = ""
+                self.uploadStats = []
+                self.uploadTotalDuration = 0
+                self.uploadStartDate = Date()
 
                 self.log("Reading capability to determine upload slots")
                 let slots = try await self.ble.readSlots(log: self.log)
@@ -128,10 +143,12 @@ final class FirmwareUpdateViewModel: ObservableObject {
                 )
 
                 try await self.ble.waitForState("uploadSuccess", initialDelay: 0, log: self.log)
+                self.flushPhaseStats()
+                self.uploadTotalDuration = Date().timeIntervalSince(self.uploadStartDate)
                 self.uploadPhase = "Geslaagd"
                 self.progress = 1
                 self.uploadPct = 100
-                self.log("FWU voltooid")
+                self.log("FWU voltooid in \(self.formatETA(Int(self.uploadTotalDuration)))")
             }
         }
     }
@@ -180,13 +197,16 @@ final class FirmwareUpdateViewModel: ObservableObject {
 
     private func updateProgress(label: String, sent: Int, total: Int) {
         if label != lastProgressLabel {
+            flushPhaseStats()
             lastProgressLabel = label
             phaseStartDate = Date()
             phaseStartBytes = sent
+            phaseTotal = total
             uploadPhase = label == "main" ? "Main firmware" : "Radio firmware"
             uploadSpeed = ""
             uploadETA = ""
         }
+        phaseTotal = total
         progress = total == 0 ? 0 : Double(sent) / Double(total)
         uploadPct = total == 0 ? 0 : Int(Double(sent) / Double(total) * 100)
         progressText = "\(sent) / \(total) bytes"
@@ -202,6 +222,13 @@ final class FirmwareUpdateViewModel: ObservableObject {
                 uploadETA = formatETA(eta)
             }
         }
+    }
+
+    private func flushPhaseStats() {
+        guard !lastProgressLabel.isEmpty else { return }
+        let duration = Date().timeIntervalSince(phaseStartDate)
+        let label = lastProgressLabel == "main" ? "Main firmware" : "Radio firmware"
+        uploadStats.append(PhaseStats(label: label, bytes: phaseTotal, duration: duration))
     }
 
     private func formatETA(_ sec: Int) -> String {
