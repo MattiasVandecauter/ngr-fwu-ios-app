@@ -13,7 +13,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 14) {
+                VStack(spacing: 10) {
                     DeviceCard(viewModel: viewModel, showingPicker: $showingDevicePicker)
                     FirmwareCard(viewModel: viewModel,
                                  pickingMain: $pickingMainImage,
@@ -21,13 +21,15 @@ struct ContentView: View {
                     SmpCard(viewModel: viewModel)
                     LogCard(viewModel: viewModel, sharing: $sharingLogs)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .padding(.bottom, 80)
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
             }
-            .background(Color(.systemGroupedBackground))
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("NGR FW Updater")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color(.secondarySystemGroupedBackground), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .sheet(isPresented: $pickingMainImage) {
                 DocumentPicker { url in viewModel.setMainImage(url) }
             }
@@ -57,42 +59,35 @@ struct DeviceCard: View {
 
     var body: some View {
         AppCard {
-            HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(connected ? Color.green.opacity(0.15) : Color(.systemFill))
-                        .frame(width: 48, height: 48)
-                    Image(systemName: connected
-                          ? "checkmark.circle.fill"
-                          : "antenna.radiowaves.left.and.right.slash")
-                        .font(.system(size: 22))
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: connected ? "checkmark.circle.fill" : "circle.dashed")
+                        .font(.title3)
                         .foregroundStyle(connected ? .green : .secondary)
-                }
+                        .frame(width: 24)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(connected ? viewModel.connectedName : "Niet verbonden")
-                        .font(.headline)
-                        .foregroundStyle(connected ? .primary : .secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(connected ? "BLE verbonden" : "Tik Zoeken om te verbinden")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(connected ? viewModel.connectedName : "Niet verbonden")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(connected ? .primary : .secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(connected ? "BLE verbonden" : "Geen apparaat geselecteerd")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
-                .layoutPriority(1)
-
-                Spacer(minLength: 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button {
                     showingPicker = true
                     viewModel.scan()
                 } label: {
-                    Label(connected ? "Wijzigen" : "Zoeken",
+                    Label(connected ? "Ander apparaat zoeken" : "Zoeken naar apparaat",
                           systemImage: "antenna.radiowaves.left.and.right")
                         .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                        .fixedSize()
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .tint(connected ? .secondary : .blue)
@@ -113,7 +108,7 @@ struct FirmwareCard: View {
         AppCard {
             VStack(spacing: 0) {
                 CardSectionHeader(icon: "square.and.arrow.down.fill", title: "Firmware bestanden")
-                    .padding(.bottom, 14)
+                    .padding(.bottom, 10)
                 FirmwareRow(
                     label: "Main",
                     icon: "cpu.fill",
@@ -121,7 +116,7 @@ struct FirmwareCard: View {
                     fileSize: viewModel.mainFileSize,
                     action: { pickingMain = true }
                 )
-                Divider().padding(.vertical, 12)
+                Divider().padding(.vertical, 8)
                 FirmwareRow(
                     label: "Radio",
                     icon: "antenna.radiowaves.left.and.right",
@@ -144,11 +139,11 @@ struct FirmwareRow: View {
     var selected: Bool { url != nil }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.title3)
+                .font(.body)
                 .foregroundStyle(selected ? .blue : .secondary)
-                .frame(width: 28)
+                .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
@@ -251,18 +246,21 @@ struct BottomBar: View {
             Divider()
             if showProgress {
                 ProgressSection(viewModel: viewModel)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
                     .padding(.bottom, 4)
                 Divider()
             }
             StartButton(viewModel: viewModel)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
         }
-        .background(.regularMaterial)
-        .animation(.easeInOut(duration: 0.25), value: showProgress)
+        .background {
+            Rectangle()
+                .fill(.regularMaterial)
+                .ignoresSafeArea(edges: .bottom)
+        }
+        .animation(.easeInOut(duration: 0.2), value: showProgress)
     }
 }
 
@@ -273,36 +271,30 @@ struct ProgressSection: View {
     var phaseColor: Color { isComplete ? .green : .blue }
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
-                Image(systemName: isComplete ? "checkmark.circle.fill" : "arrow.up.circle")
-                    .foregroundStyle(phaseColor)
-                    .font(.subheadline)
                 Text(viewModel.uploadPhase.isEmpty ? "Verbinden..." : viewModel.uploadPhase)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(phaseColor)
                 Spacer()
                 if !viewModel.uploadSpeed.isEmpty {
                     Text(viewModel.uploadSpeed)
-                        .font(.caption.monospacedDigit())
+                        .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 if viewModel.uploadPct > 0 {
-                    Text("\(viewModel.uploadPct)%")
-                        .font(.subheadline.weight(.semibold).monospacedDigit())
+                    Text("· \(viewModel.uploadPct)%")
+                        .font(.caption2.monospacedDigit())
                         .foregroundStyle(phaseColor)
+                }
+                if !viewModel.uploadETA.isEmpty {
+                    Text("· \(viewModel.uploadETA)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
             }
             ProgressView(value: viewModel.progress)
                 .tint(phaseColor)
-            if !viewModel.uploadETA.isEmpty {
-                HStack {
-                    Spacer()
-                    Text("Geschatte resterende tijd: \(viewModel.uploadETA)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
     }
 }
@@ -345,7 +337,7 @@ struct StartButton: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 13)
+            .padding(.vertical, 10)
         }
         .buttonStyle(.borderedProminent)
         .disabled(!ready)
@@ -386,7 +378,7 @@ struct LogCard: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(height: 220)
+                    .frame(height: 180)
                     .onChange(of: viewModel.logLines.count) { count in
                         if count > 0 {
                             withAnimation(.none) {
@@ -518,9 +510,9 @@ struct AppCard<Content: View>: View {
 
     var body: some View {
         content()
-            .padding(16)
+            .padding(12)
             .background(Color(.secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 16))
+                        in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -530,7 +522,7 @@ struct CardSectionHeader: View {
 
     var body: some View {
         Label(title, systemImage: icon)
-            .font(.subheadline.weight(.semibold))
+            .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             .lineLimit(1)
     }
