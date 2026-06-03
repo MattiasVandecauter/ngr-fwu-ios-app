@@ -41,12 +41,12 @@
 		0A0004010000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				0A0004010000000000000002 /* NGRFirmwareUploader */,
+				0A0004010000000000000002 /*  */,
 				0A0004010000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		0A0004010000000000000002 /* NGRFirmwareUploader */ = {
+		0A0004010000000000000002 /*  */ = {
 			isa = PBXGroup;
 			children = (
 				0A0002010000000000000001 /* NGRFirmwareUploaderApp.swift */,
@@ -58,7 +58,7 @@
 				0A0002010000000000000007 /* Info.plist */,
 				0A0002010000000000000008 /* README.md */,
 			);
-			path = "";
+			name = "";
 			sourceTree = "<group>";
 		};
 		0A0004010000000000000003 /* Products */ = {
@@ -270,7 +270,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 247633R786;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -294,7 +294,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 247633R786;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

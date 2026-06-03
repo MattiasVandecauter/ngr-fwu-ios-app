@@ -439,12 +439,16 @@ struct DevicePickerSheet: View {
                 }
 
                 if !viewModel.isScanning && viewModel.devices.isEmpty {
-                    ContentUnavailableView(
-                        "Geen apparaten gevonden",
-                        systemImage: "antenna.radiowaves.left.and.right.slash",
-                        description: Text("Zorg dat het apparaat ingeschakeld is en BLE beschikbaar.")
-                    )
-                    .listRowBackground(Color.clear)
+                    if #available(iOS 17.0, *) {
+                        ContentUnavailableView(
+                            "Geen apparaten gevonden",
+                            systemImage: "antenna.radiowaves.left.and.right.slash",
+                            description: Text("Zorg dat het apparaat ingeschakeld is en BLE beschikbaar.")
+                        )
+                        .listRowBackground(Color.clear)
+                    } else {
+                        // Fallback on earlier versions
+                    }
                 }
             }
             .navigationTitle("Apparaten")
