@@ -500,7 +500,7 @@ struct DevicePickerSheet: View {
                 if viewModel.isScanning {
                     HStack(spacing: 12) {
                         ProgressView()
-                        Text("Zoeken naar BRC_* apparaten...")
+                        Text("Zoeken naar NGRs...")
                             .foregroundStyle(.secondary)
                     }
                     .listRowBackground(Color.clear)
