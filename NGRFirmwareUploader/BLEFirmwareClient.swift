@@ -383,6 +383,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
                 for request in pending {
                     debugLog("SMP write: seq=\(request.sequence), off=\(request.offset), chunk=\(request.chunkSize), packet=\(request.packet.count) bytes")
                     try await write(request.packet, to: characteristic, type: writeType)
+                    await Task.yield()
                 }
 
                 var responses: [UInt8: Int] = [:]
