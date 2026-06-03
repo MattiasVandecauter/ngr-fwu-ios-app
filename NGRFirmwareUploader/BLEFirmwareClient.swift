@@ -26,6 +26,7 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
     private var readContinuation: CheckedContinuation<Data, Error>?
     private var writeContinuations: [CBUUID: CheckedContinuation<Void, Error>] = [:]
     private var notifyContinuation: CheckedContinuation<Void, Error>?
+    private var writeWithoutResponseContinuation: CheckedContinuation<Void, Error>?
     private var smpResponses: [Data] = []
     private var smpResponseError: Error?
     private var verboseLogging = false
@@ -262,9 +263,12 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
         guard let peripheral else { throw BLEError.notConnected }
         debugLog("Writing \(data.count) bytes to \(characteristic.uuid), type=\(type.debugDescription), props=\(characteristic.properties.debugDescription)")
         if type == .withoutResponse {
-            while !peripheral.canSendWriteWithoutResponse {
-                debugLog("Waiting for canSendWriteWithoutResponse")
-                try await Task.sleep(nanoseconds: 10_000_000)
+            if !peripheral.canSendWriteWithoutResponse {
+                let waitStart = Date()
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    self.writeWithoutResponseContinuation = continuation
+                }
+                debugLog("canSendWriteWithoutResponse ready after \(Int(Date().timeIntervalSince(waitStart) * 1000))ms")
             }
             peripheral.writeValue(data, for: characteristic, type: type)
             return
@@ -533,6 +537,8 @@ extension BLEFirmwareClient: CBCentralManagerDelegate {
             self.readContinuation = nil
             self.notifyContinuation?.resume(throwing: disconnectError)
             self.notifyContinuation = nil
+            self.writeWithoutResponseContinuation?.resume(throwing: disconnectError)
+            self.writeWithoutResponseContinuation = nil
             for continuation in self.writeContinuations.values {
                 continuation.resume(throwing: disconnectError)
             }
@@ -644,6 +650,14 @@ extension BLEFirmwareClient: CBPeripheralDelegate {
                 self.debugLog("Write complete for \(characteristic.uuid)")
                 continuation.resume(returning: ())
             }
+        }
+    }
+
+    nonisolated func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        Task { @MainActor in
+            self.debugLog("peripheralIsReady(toSendWriteWithoutResponse:)")
+            self.writeWithoutResponseContinuation?.resume(returning: ())
+            self.writeWithoutResponseContinuation = nil
         }
     }
 
