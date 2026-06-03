@@ -256,15 +256,25 @@ struct SmpCard: View {
                 VStack(spacing: 0) {
                     Divider().padding(.top, 12)
                     VStack(spacing: 0) {
-                        SmpRow { Stepper("Window: \(viewModel.windowSize)", value: $viewModel.windowSize, in: 1...1000) }
+                        SmpRow {
+                            SmpStepper("Window", value: $viewModel.windowSize, in: 1...1000)
+                        }
                         Divider().padding(.leading, 4)
-                        SmpRow { Stepper("Payload: \(viewModel.payloadSize) bytes", value: $viewModel.payloadSize, in: 32...448, step: 16) }
+                        SmpRow {
+                            SmpStepper("Payload", value: $viewModel.payloadSize, in: 32...448, step: 16, unit: "bytes")
+                        }
                         Divider().padding(.leading, 4)
-                        SmpRow { Stepper("Retries: \(viewModel.retryCount)", value: $viewModel.retryCount, in: 0...10) }
+                        SmpRow {
+                            SmpStepper("Retries", value: $viewModel.retryCount, in: 0...10)
+                        }
                         Divider().padding(.leading, 4)
-                        SmpRow { Stepper("ST slot: \(viewModel.mainSlot)", value: $viewModel.mainSlot, in: 0...1) }
+                        SmpRow {
+                            SmpStepper("ST slot", value: $viewModel.mainSlot, in: 0...1)
+                        }
                         Divider().padding(.leading, 4)
-                        SmpRow { Stepper("nRF image: \(viewModel.radioSmpImage)", value: $viewModel.radioSmpImage, in: 2...3) }
+                        SmpRow {
+                            SmpStepper("nRF image", value: $viewModel.radioSmpImage, in: 2...3)
+                        }
                         Divider().padding(.leading, 4)
                         SmpRow {
                             Toggle("Write without response", isOn: $viewModel.writeWithoutResponse)
@@ -294,6 +304,105 @@ struct SmpRow<Content: View>: View {
     var body: some View {
         content()
             .padding(.vertical, 6)
+    }
+}
+
+struct SmpStepper: View {
+    let label: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step: Int = 1
+    var unit: String = ""
+
+    @State private var editing = false
+    @State private var draft = ""
+    @State private var invalid = false
+    @FocusState private var focused: Bool
+
+    init(_ label: String, value: Binding<Int>, in range: ClosedRange<Int>, step: Int = 1, unit: String = "") {
+        self.label = label
+        self._value = value
+        self.range = range
+        self.step = step
+        self.unit = unit
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+
+            Spacer()
+
+            if editing {
+                TextField("", text: $draft)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .font(.subheadline.weight(.medium).monospacedDigit())
+                    .foregroundStyle(invalid ? .red : .primary)
+                    .frame(width: 64)
+                    .focused($focused)
+                    .onChange(of: draft) { _ in validateDraft() }
+                    .onSubmit { commit() }
+                    .toolbar {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Gereed") { commit() }
+                        }
+                    }
+            } else {
+                Button {
+                    draft = "\(value)"
+                    invalid = false
+                    editing = true
+                    focused = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Text("\(value)")
+                            .font(.subheadline.weight(.medium).monospacedDigit())
+                        if !unit.isEmpty {
+                            Text(unit)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .foregroundStyle(.blue)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color(.systemFill), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Stepper("", value: $value, in: range, step: step)
+                .labelsHidden()
+                .onChange(of: value) { _ in
+                    if editing { editing = false }
+                }
+        }
+    }
+
+    private func validateDraft() {
+        guard let parsed = Int(draft) else { invalid = !draft.isEmpty; return }
+        let snapped = snap(parsed)
+        invalid = snapped != parsed || !range.contains(parsed)
+    }
+
+    private func commit() {
+        editing = false
+        focused = false
+        guard let parsed = Int(draft) else { return }
+        value = clamp(snap(parsed))
+    }
+
+    private func snap(_ v: Int) -> Int {
+        guard step > 1 else { return v }
+        return Int((Double(v) / Double(step)).rounded()) * step
+    }
+
+    private func clamp(_ v: Int) -> Int {
+        min(range.upperBound, max(range.lowerBound, v))
     }
 }
 
