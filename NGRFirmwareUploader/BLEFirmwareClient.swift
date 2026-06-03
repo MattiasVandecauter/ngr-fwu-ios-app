@@ -287,11 +287,17 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
     }
 
     private func nextSMPResponse(timeout: TimeInterval = 30) async throws -> Data {
+        guard let data = try await nextSMPResponseOrNil(timeout: timeout) else {
+            throw BLEError.timeout("SMP response timeout")
+        }
+        return data
+    }
+
+    private func nextSMPResponseOrNil(timeout: TimeInterval) async throws -> Data? {
         if !self.smpResponses.isEmpty {
             self.debugLog("Using queued SMP response; queued count before pop=\(self.smpResponses.count)")
             return self.smpResponses.removeFirst()
         }
-        self.debugLog("Waiting for SMP response, timeout=\(Int(timeout))s")
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if let error = self.smpResponseError {
@@ -304,7 +310,44 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
             }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        throw BLEError.timeout("SMP response timeout")
+        return nil
+    }
+
+    private func probeMissing(
+        _ missing: [SMP.PendingRequest],
+        into responses: [UInt8: Int],
+        characteristic: CBCharacteristic,
+        writeType: CBCharacteristicWriteType,
+        log: @escaping (String) -> Void
+    ) async throws -> [UInt8: Int] {
+        var responses = responses
+        let positions = missing.compactMap { req in
+            // position is already known from caller; log seq list suffices
+            req.sequence
+        }
+        log("[BLE] SMP probing \(missing.count) missing notification(s): seq=\(positions)")
+
+        for req in missing {
+            try await write(req.packet, to: characteristic, type: writeType)
+        }
+
+        let deadline = Date().addingTimeInterval(2.0)
+        var waiting = Set(missing.map(\.sequence))
+
+        while !waiting.isEmpty {
+            guard Date() < deadline else {
+                log("[BLE] SMP probe timeout: still missing seq=\(Array(waiting))")
+                throw BLEError.timeout("SMP probe timed out")
+            }
+            guard let data = try await nextSMPResponseOrNil(timeout: 0.1) else { continue }
+            let parsed = try SMP.responseSequenceAndOffset(data)
+            if waiting.contains(parsed.sequence) {
+                responses[parsed.sequence] = parsed.offset
+                waiting.remove(parsed.sequence)
+                log("[BLE] SMP probe ok: seq=\(parsed.sequence) next_off=\(parsed.offset)")
+            }
+        }
+        return responses
     }
 
     private func sendWindowWithRetry(
@@ -331,8 +374,29 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
 
                 var responses: [UInt8: Int] = [:]
                 let windowEndOffset = pending.last!.offset + pending.last!.chunkSize
-                while responses.count < pending.count {
-                    let response = try await nextSMPResponse()
+                let windowStart = Date()
+                var lastResponseTime = Date()
+
+                outerLoop: while responses.count < pending.count {
+                    // 30s absolute safety net
+                    if Date().timeIntervalSince(windowStart) >= 30 {
+                        let missing = pending.filter { responses[$0.sequence] == nil }
+                        log("[BLE] SMP window timeout: \(responses.count)/\(pending.count) (off=\(pending.first!.offset)) missing_seq=\(missing.map(\.sequence))")
+                        throw BLEError.timeout("SMP window response timeout")
+                    }
+
+                    // Inactivity: some responses received but none for 500ms → probe
+                    let sinceLastResponse = Date().timeIntervalSince(lastResponseTime)
+                    if !responses.isEmpty && sinceLastResponse >= 0.5 {
+                        let missing = pending.filter { responses[$0.sequence] == nil }
+                        let positions = missing.compactMap { req in pending.firstIndex(where: { $0.sequence == req.sequence }) }
+                        log("[BLE] SMP inactivity \(Int(sinceLastResponse * 1000))ms: \(responses.count)/\(pending.count) missing_seq=\(missing.map(\.sequence)) pos=\(positions)")
+                        responses = try await probeMissing(missing, into: responses, characteristic: characteristic, writeType: writeType, log: log)
+                        break outerLoop
+                    }
+
+                    guard let response = try await nextSMPResponseOrNil(timeout: 0.1) else { continue }
+
                     debugLog("SMP response raw: \(response.hexString)")
                     let parsed = try SMP.responseSequenceAndOffset(response)
                     debugLog("SMP response parsed: seq=\(parsed.sequence), nextOff=\(parsed.offset)")
@@ -341,11 +405,11 @@ final class BLEFirmwareClient: NSObject, ObservableObject {
                         continue
                     }
                     responses[parsed.sequence] = parsed.offset
+                    lastResponseTime = Date()
 
                     if parsed.offset >= windowEndOffset {
                         return windowEndOffset
                     }
-
                     if let request = pending.first(where: { $0.sequence == parsed.sequence }) {
                         let expectedOffset = request.offset + request.chunkSize
                         if parsed.offset >= 0, parsed.offset != expectedOffset {
